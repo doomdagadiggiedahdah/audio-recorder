@@ -1,5 +1,5 @@
 import { Text, View, StyleSheet, FlatList, TouchableOpacity, Alert } from "react-native";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Ionicons } from "@expo/vector-icons";
 import * as FileSystem from 'expo-file-system';
 import { Audio } from 'expo-av';
@@ -29,10 +29,18 @@ export default function Recordings() {
     };
   }, []);
 
-  // Reload when tab becomes focused
-  useFocusEffect(() => {
-    loadSaveLocationAndRecordings();
-  });
+  // Reload when tab becomes focused and poll every second while focused
+  useFocusEffect(
+    useCallback(() => {
+      loadSaveLocationAndRecordings();
+      
+      const interval = setInterval(() => {
+        loadRecordings();
+      }, 1000); // Poll every second while focused
+      
+      return () => clearInterval(interval);
+    }, [])
+  );
 
   const loadSaveLocationAndRecordings = async () => {
     try {
@@ -60,16 +68,20 @@ export default function Recordings() {
         // Using Storage Access Framework
         try {
           const files = await FileSystem.StorageAccessFramework.readDirectoryAsync(targetLocation);
+          console.log('SAF files found:', files);
           
           // For SAF, files is an array of URIs, not filenames
           recordingsWithInfo = await Promise.all(
             files.map(async (fileUri) => {
               try {
-                // Extract filename from the URI
-                const fileName = fileUri.split('/').pop() || fileUri;
+                // Extract filename from the SAF URI
+                // SAF URIs look like: content://.../document/primary%3ARecordings%2Ffilename.m4a
+                const fileName = decodeURIComponent(fileUri.split('%2F').pop() || fileUri);
+                console.log('Extracted filename:', fileName, 'from URI:', fileUri);
                 
                 // Only process .m4a files that aren't lock files
                 if (!fileName.endsWith('.m4a') || fileName.includes('lock')) {
+                  console.log('Filtering out file:', fileName);
                   return null;
                 }
                 
@@ -89,15 +101,20 @@ export default function Recordings() {
                 try {
                   const safInfo = await FileSystem.StorageAccessFramework.getUriInfoAsync(fileUri);
                   fileSize = safInfo.size || 0;
+                  console.log('Got file size via SAF:', fileSize, 'for', fileName);
                 } catch (sizeError) {
+                  console.log('SAF size failed, trying getInfoAsync for:', fileName);
                   try {
                     const fileInfo = await FileSystem.getInfoAsync(fileUri);
                     fileSize = fileInfo.size || 0;
-                  } catch {
+                    console.log('Got file size via getInfoAsync:', fileSize, 'for', fileName);
+                  } catch (getInfoError) {
+                    console.log('Both size methods failed for:', fileName, getInfoError);
                     fileSize = 0; // Fallback to 0 if all methods fail
                   }
                 }
                 
+                console.log('Final recording object for:', fileName, 'size:', fileSize);
                 return {
                   name: fileName,
                   uri: fileUri, // Use the actual SAF URI
