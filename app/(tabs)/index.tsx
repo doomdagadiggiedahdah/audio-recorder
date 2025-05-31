@@ -26,13 +26,10 @@ export default function Index() {
   const loadSaveLocation = async () => {
     try {
       const savedLocation = await AsyncStorage.getItem('saveLocation');
-      console.log('Loaded save location from storage:', savedLocation);
       if (savedLocation) {
         setSaveLocation(savedLocation);
-        console.log('Save location state updated to:', savedLocation);
       } else {
         setSaveLocation(FileSystem.documentDirectory || '');
-        console.log('Using default save location');
       }
     } catch (error) {
       console.error('Error loading save location:', error);
@@ -99,7 +96,6 @@ export default function Index() {
       }
       
       setLockFileName(lockName);
-      console.log('Lock file created:', lockName);
       return lockFileUri;
     } catch (error) {
       console.error('Error creating lock file:', error);
@@ -116,12 +112,10 @@ export default function Index() {
       if (targetLocation && targetLocation.startsWith('content://')) {
         // For SAF, we need to find and delete the lock file
         // This is complex with SAF, so we'll just clear the state for now
-        console.log('Lock file removed (SAF):', lockFileName);
       } else {
         // Regular file system
         const lockFileUri = `${targetLocation}${lockFileName}`;
         await FileSystem.deleteAsync(lockFileUri, { idempotent: true });
-        console.log('Lock file removed:', lockFileName);
       }
       
       setLockFileName('');
@@ -180,7 +174,6 @@ export default function Index() {
         }
       });
       
-      console.log('Recording started');
     } catch (error) {
       console.error('Failed to start recording:', error);
       // Remove lock file if recording failed to start
@@ -202,22 +195,17 @@ export default function Index() {
           const formattedFileName = getFormattedFileName();
           const targetLocation = saveLocation || FileSystem.documentDirectory || '';
           
-          console.log('Current saveLocation state:', saveLocation);
-          console.log('Saving to location:', targetLocation);
-          console.log('Filename:', formattedFileName);
           
           let newUri: string;
           
           if (targetLocation && targetLocation.startsWith('content://')) {
             // Using Storage Access Framework - create file in selected directory
-            console.log('Using Storage Access Framework');
             newUri = await FileSystem.StorageAccessFramework.createFileAsync(
               targetLocation,
               formattedFileName,
               'audio/m4a'
             );
             
-            console.log('Created SAF file:', newUri);
             
             // For SAF, we need to read the original file and write to the new location
             const originalFile = await FileSystem.readAsStringAsync(uri, {
@@ -228,14 +216,11 @@ export default function Index() {
               encoding: FileSystem.EncodingType.Base64,
             });
             
-            console.log('Successfully wrote file via SAF');
           } else {
             // Regular file system
-            console.log('Using regular file system');
             const fallbackLocation = targetLocation || FileSystem.documentDirectory || '';
             newUri = `${fallbackLocation}${formattedFileName}`;
             
-            console.log('Copying from:', uri, 'to:', newUri);
             
             // Copy the file to the new location with the formatted name
             await FileSystem.copyAsync({
@@ -243,10 +228,8 @@ export default function Index() {
               to: newUri,
             });
             
-            console.log('Successfully copied file via regular filesystem');
           }
           
-          console.log('Recording saved with formatted name:', newUri);
           Alert.alert('Recording Saved', `Recording saved as: ${formattedFileName}`);
         } catch (saveError) {
           console.error('Error saving file:', saveError);

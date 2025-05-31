@@ -37,7 +37,6 @@ export default function Recordings() {
   const loadSaveLocationAndRecordings = async () => {
     try {
       const savedLocation = await AsyncStorage.getItem('saveLocation');
-      console.log('Recordings tab - loaded save location:', savedLocation);
       if (savedLocation) {
         setSaveLocation(savedLocation);
       } else {
@@ -54,16 +53,13 @@ export default function Recordings() {
   const loadRecordings = async (locationToUse?: string) => {
     try {
       const targetLocation = locationToUse || saveLocation || FileSystem.documentDirectory || '';
-      console.log('Loading recordings from:', targetLocation);
       
       let recordingsWithInfo: Recording[] = [];
       
       if (targetLocation.startsWith('content://')) {
         // Using Storage Access Framework
-        console.log('Using SAF to load recordings');
         try {
           const files = await FileSystem.StorageAccessFramework.readDirectoryAsync(targetLocation);
-          console.log('SAF files found:', files);
           
           const recordingFiles = files.filter(file => file.endsWith('.m4a') && !file.endsWith('.lock'));
           
@@ -72,11 +68,22 @@ export default function Recordings() {
               try {
                 // For SAF, we construct the URI differently
                 const fileUri = `${targetLocation}/${fileName}`;
+                // Try to extract timestamp from filename (format: YYYY-MM-DD HH-MM-SS N.m4a)
+                let modificationTime = 0;
+                const match = fileName.match(/(\d{4})-(\d{2})-(\d{2}) (\d{2})-(\d{2})-(\d{2})/);
+                if (match) {
+                  const [, year, month, day, hour, minute, second] = match;
+                  const date = new Date(parseInt(year), parseInt(month) - 1, parseInt(day), parseInt(hour), parseInt(minute), parseInt(second));
+                  modificationTime = date.getTime() / 1000; // Convert to seconds
+                } else {
+                  modificationTime = Date.now() / 1000; // Fallback to current time in seconds
+                }
+                
                 return {
                   name: fileName,
                   uri: fileUri,
                   size: 0, // SAF doesn't easily provide size
-                  modificationTime: Date.now(), // Use current time as fallback
+                  modificationTime,
                 };
               } catch (error) {
                 console.error('Error processing SAF file:', fileName, error);
@@ -88,13 +95,14 @@ export default function Recordings() {
           // Filter out any null entries
           recordingsWithInfo = recordingsWithInfo.filter(item => item !== null) as Recording[];
         } catch (safError) {
-          console.error('SAF read error:', safError);
-          // Fallback to empty array if SAF fails
+          // SAF permission lost or directory not accessible
+          // Clear the saved location and fall back to default directory
+          await AsyncStorage.removeItem('saveLocation');
+          setSaveLocation(FileSystem.documentDirectory || '');
           recordingsWithInfo = [];
         }
       } else {
         // Regular file system
-        console.log('Using regular file system to load recordings');
         const files = await FileSystem.readDirectoryAsync(targetLocation);
         const recordingFiles = files.filter(file => file.endsWith('.m4a') && !file.endsWith('.lock'));
         
@@ -106,7 +114,7 @@ export default function Recordings() {
               name: file,
               uri,
               size: info.size || 0,
-              modificationTime: info.modificationTime || 0,
+              modificationTime: (info.modificationTime || 0) / 1000, // Convert to seconds for consistency
             };
           })
         );
@@ -115,7 +123,6 @@ export default function Recordings() {
       // Sort by modification time (newest first)
       recordingsWithInfo.sort((a, b) => b.modificationTime - a.modificationTime);
       setRecordings(recordingsWithInfo);
-      console.log('Loaded recordings count:', recordingsWithInfo.length);
     } catch (error) {
       console.error('Error loading recordings:', error);
       Alert.alert('Error', 'Failed to load recordings');
