@@ -11,7 +11,7 @@ export default function Index() {
   const [recording, setRecording] = useState<Audio.Recording | null>(null);
   const [recordingStatus, setRecordingStatus] = useState<any>(null);
   const [saveLocation, setSaveLocation] = useState<string>('');
-  const [lockFileName, setLockFileName] = useState<string>('');
+  const [lockFileUri, setLockFileUri] = useState<string>('');
 
   useEffect(() => {
     loadSaveLocation();
@@ -95,7 +95,7 @@ export default function Index() {
         });
       }
       
-      setLockFileName(lockName);
+      setLockFileUri(lockFileUri);
       return lockFileUri;
     } catch (error) {
       console.error('Error creating lock file:', error);
@@ -105,22 +105,15 @@ export default function Index() {
 
   const removeLockFile = async () => {
     try {
-      if (!lockFileName) return;
+      if (!lockFileUri) return;
       
-      const targetLocation = saveLocation || FileSystem.documentDirectory || '';
+      // Delete the lock file using the stored URI
+      await FileSystem.deleteAsync(lockFileUri, { idempotent: true });
       
-      if (targetLocation && targetLocation.startsWith('content://')) {
-        // For SAF, we need to find and delete the lock file
-        // This is complex with SAF, so we'll just clear the state for now
-      } else {
-        // Regular file system
-        const lockFileUri = `${targetLocation}${lockFileName}`;
-        await FileSystem.deleteAsync(lockFileUri, { idempotent: true });
-      }
-      
-      setLockFileName('');
+      setLockFileUri('');
     } catch (error) {
       console.error('Error removing lock file:', error);
+      setLockFileUri(''); // Clear the URI even if deletion fails
     }
   };
 

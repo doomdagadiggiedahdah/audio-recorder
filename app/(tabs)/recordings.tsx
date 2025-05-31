@@ -61,13 +61,18 @@ export default function Recordings() {
         try {
           const files = await FileSystem.StorageAccessFramework.readDirectoryAsync(targetLocation);
           
-          const recordingFiles = files.filter(file => file.endsWith('.m4a') && !file.endsWith('.lock'));
-          
+          // For SAF, files is an array of URIs, not filenames
           recordingsWithInfo = await Promise.all(
-            recordingFiles.map(async (fileName) => {
+            files.map(async (fileUri) => {
               try {
-                // For SAF, we construct the URI differently
-                const fileUri = `${targetLocation}/${fileName}`;
+                // Extract filename from the URI
+                const fileName = fileUri.split('/').pop() || fileUri;
+                
+                // Only process .m4a files that aren't lock files
+                if (!fileName.endsWith('.m4a') || fileName.includes('lock')) {
+                  return null;
+                }
+                
                 // Try to extract timestamp from filename (format: YYYY-MM-DD HH-MM-SS N.m4a)
                 let modificationTime = 0;
                 const match = fileName.match(/(\d{4})-(\d{2})-(\d{2}) (\d{2})-(\d{2})-(\d{2})/);
@@ -79,14 +84,28 @@ export default function Recordings() {
                   modificationTime = Date.now() / 1000; // Fallback to current time in seconds
                 }
                 
+                // Try to get file size for SAF files
+                let fileSize = 0;
+                try {
+                  const safInfo = await FileSystem.StorageAccessFramework.getUriInfoAsync(fileUri);
+                  fileSize = safInfo.size || 0;
+                } catch (sizeError) {
+                  try {
+                    const fileInfo = await FileSystem.getInfoAsync(fileUri);
+                    fileSize = fileInfo.size || 0;
+                  } catch {
+                    fileSize = 0; // Fallback to 0 if all methods fail
+                  }
+                }
+                
                 return {
                   name: fileName,
-                  uri: fileUri,
-                  size: 0, // SAF doesn't easily provide size
+                  uri: fileUri, // Use the actual SAF URI
+                  size: fileSize,
                   modificationTime,
                 };
               } catch (error) {
-                console.error('Error processing SAF file:', fileName, error);
+                console.error('Error processing SAF file:', fileUri, error);
                 return null;
               }
             })
@@ -120,8 +139,8 @@ export default function Recordings() {
         );
       }
 
-      // Sort by modification time (newest first)
-      recordingsWithInfo.sort((a, b) => b.modificationTime - a.modificationTime);
+      // Sort by file name alphabetically
+      recordingsWithInfo.sort((a, b) => a.name.localeCompare(b.name));
       setRecordings(recordingsWithInfo);
     } catch (error) {
       console.error('Error loading recordings:', error);
@@ -178,7 +197,13 @@ export default function Recordings() {
           style: 'destructive',
           onPress: async () => {
             try {
-              await FileSystem.deleteAsync(uri);
+              if (uri.startsWith('content://')) {
+                // Use SAF deletion for content URIs
+                await FileSystem.StorageAccessFramework.deleteAsync(uri);
+              } else {
+                // Use regular deletion for filesystem URIs
+                await FileSystem.deleteAsync(uri);
+              }
               await loadRecordings(); // Refresh the list
               Alert.alert('Success', 'Recording deleted');
             } catch (error) {
@@ -203,12 +228,23 @@ export default function Recordings() {
     return new Date(timestamp * 1000).toLocaleString();
   };
 
+  const getDisplayName = (name: string) => {
+    // Extract filename from SAF URI if needed
+    if (name.includes('%2F')) {
+      // Decode URL-encoded filename
+      const decoded = decodeURIComponent(name);
+      const lastSlash = decoded.lastIndexOf('/');
+      return lastSlash !== -1 ? decoded.substring(lastSlash + 1) : decoded;
+    }
+    return name;
+  };
+
   const renderRecording = ({ item }: { item: Recording }) => (
     <View style={styles.recordingItem}>
       <View style={styles.recordingInfo}>
-        <Text style={styles.recordingName}>{item.name}</Text>
+        <Text style={styles.recordingName}>{getDisplayName(item.name)}</Text>
         <Text style={styles.recordingDetails}>
-          {formatFileSize(item.size)} • {formatDate(item.modificationTime)}
+          {formatFileSize(item.size)}
         </Text>
       </View>
       <View style={styles.recordingActions}>
