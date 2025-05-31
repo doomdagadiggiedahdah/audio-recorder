@@ -3,6 +3,8 @@ import { useState, useEffect } from "react";
 import { Ionicons } from "@expo/vector-icons";
 import * as FileSystem from 'expo-file-system';
 import { Audio } from 'expo-av';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useFocusEffect } from '@react-navigation/native';
 
 interface Recording {
   name: string;
@@ -16,9 +18,10 @@ export default function Recordings() {
   const [playingSound, setPlayingSound] = useState<Audio.Sound | null>(null);
   const [playingUri, setPlayingUri] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [saveLocation, setSaveLocation] = useState<string>('');
 
   useEffect(() => {
-    loadRecordings();
+    loadSaveLocationAndRecordings();
     return () => {
       if (playingSound) {
         playingSound.unloadAsync();
@@ -26,30 +29,97 @@ export default function Recordings() {
     };
   }, []);
 
-  const loadRecordings = async () => {
+  // Reload when tab becomes focused
+  useFocusEffect(() => {
+    loadSaveLocationAndRecordings();
+  });
+
+  const loadSaveLocationAndRecordings = async () => {
     try {
-      const files = await FileSystem.readDirectoryAsync(FileSystem.documentDirectory!);
-      const recordingFiles = files.filter(file => file.endsWith('.m4a'));
+      const savedLocation = await AsyncStorage.getItem('saveLocation');
+      console.log('Recordings tab - loaded save location:', savedLocation);
+      if (savedLocation) {
+        setSaveLocation(savedLocation);
+      } else {
+        setSaveLocation(FileSystem.documentDirectory || '');
+      }
+      await loadRecordings(savedLocation || FileSystem.documentDirectory || '');
+    } catch (error) {
+      console.error('Error loading save location in recordings tab:', error);
+      setSaveLocation(FileSystem.documentDirectory || '');
+      await loadRecordings(FileSystem.documentDirectory || '');
+    }
+  };
+
+  const loadRecordings = async (locationToUse?: string) => {
+    try {
+      const targetLocation = locationToUse || saveLocation || FileSystem.documentDirectory || '';
+      console.log('Loading recordings from:', targetLocation);
       
-      const recordingsWithInfo = await Promise.all(
-        recordingFiles.map(async (file) => {
-          const uri = `${FileSystem.documentDirectory}${file}`;
-          const info = await FileSystem.getInfoAsync(uri);
-          return {
-            name: file,
-            uri,
-            size: info.size || 0,
-            modificationTime: info.modificationTime || 0,
-          };
-        })
-      );
+      let recordingsWithInfo: Recording[] = [];
+      
+      if (targetLocation.startsWith('content://')) {
+        // Using Storage Access Framework
+        console.log('Using SAF to load recordings');
+        try {
+          const files = await FileSystem.StorageAccessFramework.readDirectoryAsync(targetLocation);
+          console.log('SAF files found:', files);
+          
+          const recordingFiles = files.filter(file => file.endsWith('.m4a') && !file.endsWith('.lock'));
+          
+          recordingsWithInfo = await Promise.all(
+            recordingFiles.map(async (fileName) => {
+              try {
+                // For SAF, we construct the URI differently
+                const fileUri = `${targetLocation}/${fileName}`;
+                return {
+                  name: fileName,
+                  uri: fileUri,
+                  size: 0, // SAF doesn't easily provide size
+                  modificationTime: Date.now(), // Use current time as fallback
+                };
+              } catch (error) {
+                console.error('Error processing SAF file:', fileName, error);
+                return null;
+              }
+            })
+          );
+          
+          // Filter out any null entries
+          recordingsWithInfo = recordingsWithInfo.filter(item => item !== null) as Recording[];
+        } catch (safError) {
+          console.error('SAF read error:', safError);
+          // Fallback to empty array if SAF fails
+          recordingsWithInfo = [];
+        }
+      } else {
+        // Regular file system
+        console.log('Using regular file system to load recordings');
+        const files = await FileSystem.readDirectoryAsync(targetLocation);
+        const recordingFiles = files.filter(file => file.endsWith('.m4a') && !file.endsWith('.lock'));
+        
+        recordingsWithInfo = await Promise.all(
+          recordingFiles.map(async (file) => {
+            const uri = `${targetLocation}${file}`;
+            const info = await FileSystem.getInfoAsync(uri);
+            return {
+              name: file,
+              uri,
+              size: info.size || 0,
+              modificationTime: info.modificationTime || 0,
+            };
+          })
+        );
+      }
 
       // Sort by modification time (newest first)
       recordingsWithInfo.sort((a, b) => b.modificationTime - a.modificationTime);
       setRecordings(recordingsWithInfo);
+      console.log('Loaded recordings count:', recordingsWithInfo.length);
     } catch (error) {
       console.error('Error loading recordings:', error);
       Alert.alert('Error', 'Failed to load recordings');
+      setRecordings([]);
     } finally {
       setLoading(false);
     }

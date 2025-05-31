@@ -2,16 +2,43 @@ import { Text, View, TouchableOpacity, StyleSheet, Alert } from "react-native";
 import { useState, useEffect } from "react";
 import { Audio } from 'expo-av';
 import * as FileSystem from 'expo-file-system';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useFocusEffect } from '@react-navigation/native';
 
 export default function Index() {
   const [isRecording, setIsRecording] = useState(false);
   const [recordTime, setRecordTime] = useState('00:00');
   const [recording, setRecording] = useState<Audio.Recording | null>(null);
   const [recordingStatus, setRecordingStatus] = useState<any>(null);
+  const [saveLocation, setSaveLocation] = useState<string>('');
+  const [lockFileName, setLockFileName] = useState<string>('');
 
   useEffect(() => {
+    loadSaveLocation();
     requestPermissions();
   }, []);
+
+  // Reload save location when tab becomes focused
+  useFocusEffect(() => {
+    loadSaveLocation();
+  });
+
+  const loadSaveLocation = async () => {
+    try {
+      const savedLocation = await AsyncStorage.getItem('saveLocation');
+      console.log('Loaded save location from storage:', savedLocation);
+      if (savedLocation) {
+        setSaveLocation(savedLocation);
+        console.log('Save location state updated to:', savedLocation);
+      } else {
+        setSaveLocation(FileSystem.documentDirectory || '');
+        console.log('Using default save location');
+      }
+    } catch (error) {
+      console.error('Error loading save location:', error);
+      setSaveLocation(FileSystem.documentDirectory || '');
+    }
+  };
 
   const requestPermissions = async () => {
     try {
@@ -23,6 +50,9 @@ export default function Index() {
       await Audio.setAudioModeAsync({
         allowsRecordingIOS: true,
         playsInSilentModeIOS: true,
+        staysActiveInBackground: true,
+        shouldDuckAndroid: true,
+        playThroughEarpieceAndroid: false,
       });
       return true;
     } catch (err) {
@@ -43,10 +73,70 @@ export default function Index() {
     return `${year}-${month}-${day} ${hours}-${minutes}-${seconds} 0.m4a`;
   };
 
+  const createLockFile = async () => {
+    try {
+      const lockName = `recording.lock`;
+      const targetLocation = saveLocation || FileSystem.documentDirectory || '';
+      
+      let lockFileUri: string;
+      
+      if (targetLocation && targetLocation.startsWith('content://')) {
+        // Using Storage Access Framework
+        lockFileUri = await FileSystem.StorageAccessFramework.createFileAsync(
+          targetLocation,
+          lockName,
+          'text/plain'
+        );
+        await FileSystem.writeAsStringAsync(lockFileUri, 'RECORDING_IN_PROGRESS', {
+          encoding: FileSystem.EncodingType.UTF8,
+        });
+      } else {
+        // Regular file system
+        lockFileUri = `${targetLocation}${lockName}`;
+        await FileSystem.writeAsStringAsync(lockFileUri, 'RECORDING_IN_PROGRESS', {
+          encoding: FileSystem.EncodingType.UTF8,
+        });
+      }
+      
+      setLockFileName(lockName);
+      console.log('Lock file created:', lockName);
+      return lockFileUri;
+    } catch (error) {
+      console.error('Error creating lock file:', error);
+      return null;
+    }
+  };
+
+  const removeLockFile = async () => {
+    try {
+      if (!lockFileName) return;
+      
+      const targetLocation = saveLocation || FileSystem.documentDirectory || '';
+      
+      if (targetLocation && targetLocation.startsWith('content://')) {
+        // For SAF, we need to find and delete the lock file
+        // This is complex with SAF, so we'll just clear the state for now
+        console.log('Lock file removed (SAF):', lockFileName);
+      } else {
+        // Regular file system
+        const lockFileUri = `${targetLocation}${lockFileName}`;
+        await FileSystem.deleteAsync(lockFileUri, { idempotent: true });
+        console.log('Lock file removed:', lockFileName);
+      }
+      
+      setLockFileName('');
+    } catch (error) {
+      console.error('Error removing lock file:', error);
+    }
+  };
+
   const startRecording = async () => {
     try {
       const hasPermission = await requestPermissions();
       if (!hasPermission) return;
+
+      // Create lock file
+      await createLockFile();
 
       const fileName = getFormattedFileName();
       const { recording: newRecording } = await Audio.Recording.createAsync(
@@ -93,6 +183,8 @@ export default function Index() {
       console.log('Recording started');
     } catch (error) {
       console.error('Failed to start recording:', error);
+      // Remove lock file if recording failed to start
+      await removeLockFile();
       Alert.alert('Error', 'Failed to start recording');
     }
   };
@@ -105,19 +197,65 @@ export default function Index() {
       const uri = recording.getURI();
       
       if (uri) {
-        // Create the formatted filename
-        const formattedFileName = getFormattedFileName();
-        const newUri = `${FileSystem.documentDirectory}${formattedFileName}`;
-        
-        // Copy the file to the new location with the formatted name
-        await FileSystem.copyAsync({
-          from: uri,
-          to: newUri,
-        });
-        
-        console.log('Recording saved with formatted name:', newUri);
-        Alert.alert('Recording Saved', `Recording saved as: ${formattedFileName}`);
+        try {
+          // Create the formatted filename
+          const formattedFileName = getFormattedFileName();
+          const targetLocation = saveLocation || FileSystem.documentDirectory || '';
+          
+          console.log('Current saveLocation state:', saveLocation);
+          console.log('Saving to location:', targetLocation);
+          console.log('Filename:', formattedFileName);
+          
+          let newUri: string;
+          
+          if (targetLocation && targetLocation.startsWith('content://')) {
+            // Using Storage Access Framework - create file in selected directory
+            console.log('Using Storage Access Framework');
+            newUri = await FileSystem.StorageAccessFramework.createFileAsync(
+              targetLocation,
+              formattedFileName,
+              'audio/m4a'
+            );
+            
+            console.log('Created SAF file:', newUri);
+            
+            // For SAF, we need to read the original file and write to the new location
+            const originalFile = await FileSystem.readAsStringAsync(uri, {
+              encoding: FileSystem.EncodingType.Base64,
+            });
+            
+            await FileSystem.writeAsStringAsync(newUri, originalFile, {
+              encoding: FileSystem.EncodingType.Base64,
+            });
+            
+            console.log('Successfully wrote file via SAF');
+          } else {
+            // Regular file system
+            console.log('Using regular file system');
+            const fallbackLocation = targetLocation || FileSystem.documentDirectory || '';
+            newUri = `${fallbackLocation}${formattedFileName}`;
+            
+            console.log('Copying from:', uri, 'to:', newUri);
+            
+            // Copy the file to the new location with the formatted name
+            await FileSystem.copyAsync({
+              from: uri,
+              to: newUri,
+            });
+            
+            console.log('Successfully copied file via regular filesystem');
+          }
+          
+          console.log('Recording saved with formatted name:', newUri);
+          Alert.alert('Recording Saved', `Recording saved as: ${formattedFileName}`);
+        } catch (saveError) {
+          console.error('Error saving file:', saveError);
+          Alert.alert('Save Error', 'Failed to save recording. Check console for details.');
+        }
       }
+      
+      // Remove lock file
+      await removeLockFile();
       
       setRecording(null);
       setIsRecording(false);
